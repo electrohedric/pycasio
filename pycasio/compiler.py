@@ -1,10 +1,9 @@
-from ast import *
-import symtable
-from typing import Any
-from functools import cache
-import pkgutil
 import importlib.util
 import inspect
+import pkgutil
+from ast import *
+from functools import cache
+from typing import Any
 
 __CASIO_PACKAGE_NAME__ = "casio"
 __CASIO_LIB__ = f"{__package__}.{__CASIO_PACKAGE_NAME__}"
@@ -54,12 +53,59 @@ def get_children(modules, parent):
             yield children[-1]
 
 
+def resolve_attr(attr: Attribute) -> list[str]:
+    if isinstance(attr.value, Attribute):
+        return resolve_attr(attr.value) + [attr.attr]
+    elif isinstance(attr.value, Name):
+        return [attr.value.id, attr.attr]
+    print("UNKNOWN SUB-ATTRIBUTE", attr.value)
+    return []
+
+
+def get_casio_ref_type(ref: str):
+    # just a plain old module reference
+    POSSIBLE_MODULES = get_pycasio_modules()
+    if ref in POSSIBLE_MODULES:
+        return "mod", ref
+
+    # must be a function reference
+    # without the function, this must be a module now
+    modules = ref.split(".")
+    mod_ref = ".".join(modules[:-1])
+    if mod_ref not in POSSIBLE_MODULES:
+        return None, ''
+
+    # without the package references, this must be a valid function module
+    POSSIBLE_FUNCTIONS = get_pycasio_functions()
+    lib = ".".join(modules[2:-1])
+    if lib not in POSSIBLE_FUNCTIONS:
+        return None, ''
+
+    # the function must exist inside its function module
+    functions = POSSIBLE_FUNCTIONS[lib]
+    func = modules[-1]
+    if func not in functions:
+        return None
+    return "func", (lib, func)
+
+
 class CasioContext:
-    def __init__(self, source, table: symtable.SymbolTable):
+    def __init__(self, source: str):
         self.source = source
-        self.symtable = table
         self.casio = {}  # casio package aliases
+        self.symbols = {}
         self.lines = []
+
+    def lookup_casio_ref(self, symbol: str):
+        # TODO: still cant lookup pycasio if pycasio isnt imported
+        modules = symbol.split(".")
+        mod_alias = modules[0]
+        if mod_alias in self.casio:
+            symbol = f"{self.casio[mod_alias]}.{'.'.join(modules[1:])}"
+        ref_type, ref = get_casio_ref_type(symbol)
+        if ref_type is not None:
+            return symbol
+        return None
 
 
 class CasioException(Exception):
@@ -89,8 +135,10 @@ class CasioException(Exception):
             linespan = f"\n{' ' * self.col_offset}^{'~' * span}"
         return f"\n{HEADER}\nLine {self.lineno}:\n{self.line}{linespan}\nError: {self.msg}{self.helptxt}"
 
-
 class CasioImportException(CasioException):
+    pass
+
+class CasioNameError(CasioException):
     pass
 
 
@@ -156,7 +204,28 @@ class CasioNodeVisitor(NodeVisitor):
             self.ctx.casio[name.asname or name.name] = full_name
 
     def visit_Assign(self, node: Assign) -> Any:
-        pass
+        left = node.targets
+        right = node.value
+        if isinstance(right, Attribute):
+            value = ".".join(resolve_attr(right))
+            full_ref = self.ctx.lookup_casio_ref(value)
+            if full_ref:
+                # is a casio alias
+                for left_sym in left:
+                    if isinstance(left_sym, Name):
+                        self.ctx.casio[left_sym.id] = full_ref
+            else:
+                raise CasioImportException(self.ctx, right,
+                                           f"{value} is not a valid casio reference")
+        elif isinstance(right, Name):
+            value = right.id
+            if value in self.ctx.symbols:
+                pass  # TODO: blah
+            else:
+                raise CasioNameError(self.ctx, right,
+                                     f"{value} is not defined")
+        elif isinstance(right, Call):
+            pass
 
 
 def compile_file(file: str):
@@ -164,9 +233,8 @@ def compile_file(file: str):
         src = f.read()
 
     node = parse(src)
-    table = symtable.symtable(src, file, "exec")
     print(dump(node, indent=2))
-    context = CasioContext(src, table)
+    context = CasioContext(src)
     vistor = CasioNodeVisitor(context)
     vistor.visit(node)
     print(context.casio)
