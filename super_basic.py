@@ -1,5 +1,4 @@
-from pycasio import casio
-# import pycasio.casio as casio, sys as system
+import pycasio.casio as casio
 
 cin = casio.input
 
