@@ -148,13 +148,16 @@ class CasioNodeVisitor(ast.NodeVisitor):
             pass
 
 
-def compile_file(file: str):
-    with open(file) as f:
-        src = f.read()
-
+def compile_source(src: str):
     node = ast.parse(src)
     print(ast.dump(node, indent=2))
     context = CasioContext(src)
     vistor = CasioNodeVisitor(context)
     vistor.visit(node)
     print(context.casio)
+
+
+def compile_file(file: str):
+    with open(file) as f:
+        src = f.read()
+    return compile_source(src)
