@@ -127,7 +127,7 @@ def get_pycasio_functions() -> dict[ModulePath, set[str]]:
         assert not is_pkg, "only 1-level deep packages implemented"
         full_lib = CASIO_LIB + mod_name
         spec = importlib.util.find_spec(str(full_lib))
-        loaded_mod = spec.loader.load_module(str(full_lib))
+        loaded_mod = importlib.util.module_from_spec(spec)
         libs[full_lib] = set()
         for name, member in inspect.getmembers(loaded_mod):
             if name.startswith("_"):

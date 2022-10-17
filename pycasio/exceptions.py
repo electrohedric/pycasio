@@ -1,4 +1,5 @@
 from typing import Protocol
+from .context import CasioContext
 
 class SupportsAST(Protocol):
     lineno: int
@@ -7,8 +8,9 @@ class SupportsAST(Protocol):
 
 
 class CasioException(Exception):
-    def __init__(self, source: str, lineinfo: SupportsAST, msg: str, helptxt: str = None):
-        lines = source.splitlines()
+    def __init__(self, ctx: CasioContext, lineinfo: SupportsAST, msg: str, helptxt: str = None):
+        lines = ctx.source.splitlines()
+        self.file = ctx.filename
         self.line = "<Invalid lineno>"
         self.col_offset = self.end_col_offset = -1
         if hasattr(lineinfo, "lineno"):
@@ -30,7 +32,7 @@ class CasioException(Exception):
         if self.end_col_offset != -1:
             span = max(self.end_col_offset - self.col_offset, 0)
             linespan = f"\n{' ' * self.col_offset}^{'~' * span}"
-        return f"\n{HEADER}\nLine {self.lineno}:\n{self.line}{linespan}\nError: {self.msg}{self.helptxt}"
+        return f"\n{HEADER}\nIn file {self.file}:\nLine {self.lineno}:\n{self.line}{linespan}\nError: {self.msg}{self.helptxt}"
 
 class CasioImportException(CasioException):
     pass
