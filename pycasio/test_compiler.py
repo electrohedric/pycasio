@@ -55,17 +55,22 @@ class TestLoader:
         return f"Test File \"{self.path}\", line {self.line_no}"
 
     def compile(self):
-        compiler.compile_source(self.filename, self.source)
+        return compiler.compile_source(self.filename, self.source)
 
     def test_compiles(self):
         try:
-            self.compile()
+            return self.compile()
         except CasioException:
             self.tester.fail(f"Test expected file to compile: {self.msg()}")
 
     def test_err_import(self):
         with self.tester.assertRaises(CasioImportException, msg=self.msg()):
             self.compile()
+
+    def test_import(self, name, module_path):
+        context = self.test_compiles()
+        self.tester.assertIn(name, context.casio, self.msg())
+        self.tester.assertEqual(context.casio[name], module_path, self.msg())
 
 
 @cache

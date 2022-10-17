@@ -128,6 +128,7 @@ def get_pycasio_functions() -> dict[ModulePath, set[str]]:
         full_lib = CASIO_LIB + mod_name
         spec = importlib.util.find_spec(str(full_lib))
         loaded_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(loaded_mod)
         libs[full_lib] = set()
         for name, member in inspect.getmembers(loaded_mod):
             if name.startswith("_"):
