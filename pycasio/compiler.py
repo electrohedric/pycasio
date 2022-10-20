@@ -112,30 +112,49 @@ class CasioNodeVisitor(ast.NodeVisitor):
                                        f"{value} is not a valid casio reference")
 
     def visit_Call(self, node: ast.Call) -> Any:
-        # module.func()
+        # module.func() aka some special casio function
         pass
 
     def visit_Constant(self, node: ast.Constant) -> Any:
-        return str(node.value).encode()
+        if isinstance(node, str):
+            return b'"' + str(node.value).encode() + b'"'
+        else:  # a number
+            CASIO_MAX = 9.999999999e99
+            node.value = min(max(node.value, -CASIO_MAX), CASIO_MAX)
+            return str(node.value).encode().replace(b"e", EXP)
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         left, op, right = node.left, node.op, node.right
         left_eval = self.check_eval(left)
         right_eval = self.check_eval(right)
-        x = b""
-        if isinstance(op, ast.Mult):
-            x = MULTIPLY
-        elif isinstance(op, ast.Add):
-            x = ADD
-        elif isinstance(op, ast.Sub):
-            x = SUBTRACT
-        elif isinstance(op, ast.Div):
-            x = DIVIDE
-        elif isinstance(op, ast.Pow):
-            x = POWER
-        # TODO: and more
-        print(right)
 
+        def simple_bin(operator: bytes):
+            return left_eval + operator + right_eval
+
+        if isinstance(op, ast.Mult):
+            return simple_bin(MULTIPLY)
+        elif isinstance(op, ast.Add):
+            return simple_bin(ADD)
+        elif isinstance(op, ast.Sub):
+            return simple_bin(SUBTRACT)
+        elif isinstance(op, ast.Div):
+            return simple_bin(DIVIDE)
+        elif isinstance(op, ast.Eq):
+            return simple_bin(b"=")
+        elif isinstance(op, ast.NotEq):
+            return simple_bin(NOT_EQUAL)
+        elif isinstance(op, ast.And):
+            return simple_bin(AND)
+        elif isinstance(op, ast.Or):
+            return simple_bin(OR)
+        elif isinstance(op, ast.BitXor):
+            return simple_bin(XOR)
+        elif isinstance(op, ast.Pow):
+            return simple_bin(POWER)
+        elif isinstance(op, ast.FloorDiv):
+            return FLOOR + b"(" + simple_bin(DIVIDE) + b")"
+        # TODO: and more
+        pass
 
     def visit_Assign(self, node: ast.Assign) -> Any:
         left = node.targets
@@ -144,6 +163,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
         for left_sym in left:
             if isinstance(left_sym, ast.Name):
                 self.ctx.symbols[left_sym.id] = right_eval
+                self.ctx.code.append(right_eval + ASSIGN + b"X")
             else:
                 raise CasioAssignmentError(self.ctx, left_sym,
                                            "Can't assign to this symbol")

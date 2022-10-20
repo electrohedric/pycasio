@@ -29,7 +29,7 @@ class CasioContext:
         self.source = source
         self.ast = ast_root
         self.symbols = {}
-        self.lines = []
+        self.code: list[bytes] = []
 
     def dump_ast(self):
         print(ast.dump(self.ast, indent=2))
