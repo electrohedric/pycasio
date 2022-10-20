@@ -3,11 +3,9 @@ import os.path
 from typing import Any
 
 from . import module_helper as mh
-from .exceptions import CasioImportException, CasioNameError
+from .exceptions import *
+from .bytecode import *
 from .context import CasioContext
-
-END_STATEMENT = b"\xc3\x99\r\n"  # ↵
-ASSIGN = b"\xc3\xa3"  # ➔
 
 
 def resolve_attr(attr: ast.Attribute) -> list[str]:
@@ -19,10 +17,19 @@ def resolve_attr(attr: ast.Attribute) -> list[str]:
     return []
 
 
-
 class CasioNodeVisitor(ast.NodeVisitor):
     def __init__(self, context: CasioContext):
         self.ctx = context
+
+    def check_eval(self, node: ast.expr):
+        # evaluate the value of the node by executing visit_<NodeType>
+        node_eval = self.visit(node)
+        if node_eval is None:
+            # TODO: convert to assert. more of a check for me since unknown visit calls will return None
+            # but for now the exact location printout is very nice
+            raise CasioAssignmentError(self.ctx, node,
+                                       f"Right side of assignment ({type(node).__name__}) evaluates to NULL")
+        return node_eval
 
     def visit_Import(self, node: ast.Import) -> Any:
         POSSIBLE_MODULES = mh.get_pycasio_modules()
@@ -31,7 +38,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
         for name in node.names:
             if name.name in POSSIBLE_MODULES:
                 # import pycasio, pycasio.casio
-                self.ctx.casio[name.asname or name.name] = mh.ModulePath(name.name)
+                self.ctx.symbols[name.asname or name.name] = mh.ModulePath(name.name)
             elif mh.PACKAGE.is_child(name.name):
                 # import pycasio.invalid
                 raise CasioImportException(self.ctx, name,
@@ -81,31 +88,65 @@ class CasioNodeVisitor(ast.NodeVisitor):
                                                f"Possible functions: {list(sorted(valid_func_names))}")
                 # from pycasio.casio.lib_name import func_name
 
-            self.ctx.casio[name.asname or name.name] = full_name
+            self.ctx.symbols[name.asname or name.name] = full_name
+
+    def visit_Name(self, node: ast.Name) -> Any:
+        # variable_name
+        print("NAME!")
+        value = node.id
+        if value in self.ctx.symbols:
+            pass  # TODO: blah
+        else:
+            raise CasioNameError(self.ctx, node,
+                                 f"{value} is not defined")
+
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        # module.path.attribute
+        value = ".".join(resolve_attr(node))
+        full_ref = self.ctx.lookup_casio_ref(value)
+        if full_ref:
+            # is a casio alias
+            return full_ref
+        else:
+            raise CasioImportException(self.ctx, node,
+                                       f"{value} is not a valid casio reference")
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        # module.func()
+        pass
+
+    def visit_Constant(self, node: ast.Constant) -> Any:
+        return str(node.value).encode()
+
+    def visit_BinOp(self, node: ast.BinOp) -> Any:
+        left, op, right = node.left, node.op, node.right
+        left_eval = self.check_eval(left)
+        right_eval = self.check_eval(right)
+        x = b""
+        if isinstance(op, ast.Mult):
+            x = MULTIPLY
+        elif isinstance(op, ast.Add):
+            x = ADD
+        elif isinstance(op, ast.Sub):
+            x = SUBTRACT
+        elif isinstance(op, ast.Div):
+            x = DIVIDE
+        elif isinstance(op, ast.Pow):
+            x = POWER
+        # TODO: and more
+        print(right)
+
 
     def visit_Assign(self, node: ast.Assign) -> Any:
         left = node.targets
         right = node.value
-        if isinstance(right, ast.Attribute):
-            value = ".".join(resolve_attr(right))
-            full_ref = self.ctx.lookup_casio_ref(value)
-            if full_ref:
-                # is a casio alias
-                for left_sym in left:
-                    if isinstance(left_sym, ast.Name):
-                        self.ctx.casio[left_sym.id] = full_ref
+        right_eval = self.check_eval(right)
+        for left_sym in left:
+            if isinstance(left_sym, ast.Name):
+                self.ctx.symbols[left_sym.id] = right_eval
             else:
-                raise CasioImportException(self.ctx, right,
-                                           f"{value} is not a valid casio reference")
-        elif isinstance(right, ast.Name):
-            value = right.id
-            if value in self.ctx.symbols:
-                pass  # TODO: blah
-            else:
-                raise CasioNameError(self.ctx, right,
-                                     f"{value} is not defined")
-        elif isinstance(right, ast.Call):
-            pass
+                raise CasioAssignmentError(self.ctx, left_sym,
+                                           "Can't assign to this symbol")
 
 
 def compile_source(filename: str, src: str) -> CasioContext:

@@ -24,11 +24,10 @@ def get_casio_ref_type(ref: mh.ModulePath):
 
 
 class CasioContext:
-    def __init__(self, filename: str, source: str, ast_node: ast.AST):
+    def __init__(self, filename: str, source: str, ast_root: ast.AST):
         self.filename = filename
         self.source = source
-        self.ast = ast_node
-        self.casio: dict[str, mh.ModulePath] = {}  # casio package aliases
+        self.ast = ast_root
         self.symbols = {}
         self.lines = []
 
@@ -37,11 +36,13 @@ class CasioContext:
 
     def lookup_casio_ref(self, symbol: str):
         mod = mh.ModulePath(symbol)
+        # find the first matching prefix
         for i in range(len(mod)):
             mod_alias = mod[:i+1]
-            if mod_alias in self.casio:
+            if full_ref := self.symbols.get(mod_alias):
+                assert isinstance(full_ref, mh.ModulePath), f"symbol {symbol} = {full_ref} which is not a ModulePath"
                 # fix alias with real path
-                mod = self.casio[mod_alias] + mod[i+1:]
+                mod = full_ref + mod[i+1:]
                 ref_type, ref = get_casio_ref_type(mod)
                 if ref_type is not None:
                     return mod

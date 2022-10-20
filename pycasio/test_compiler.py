@@ -6,7 +6,7 @@ from functools import cache
 from unittest import TestCase
 
 from . import compiler
-from .exceptions import CasioImportException, CasioException
+from . import exceptions as cex
 
 
 class TestCompiler(TestCase):
@@ -60,11 +60,11 @@ class TestLoader:
     def test_compiles(self):
         try:
             return self.compile()
-        except CasioException:
+        except cex.CasioException:
             self.tester.fail(f"Test expected file to compile: {self.msg()}")
 
     def test_err_import(self):
-        with self.tester.assertRaises(CasioImportException, msg=self.msg()):
+        with self.tester.assertRaises(cex.CasioImportException, msg=self.msg()):
             self.compile()
 
     def test_import(self, name, module_path):

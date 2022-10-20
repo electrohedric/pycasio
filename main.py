@@ -1,4 +1,7 @@
 import pycasio.compiler
 
 
-pycasio.compiler.compile_file("super_basic.py")
+context = pycasio.compiler.compile_file("super_basic.py")
+print("="*100)
+context.dump_ast()
+print(context.symbols)

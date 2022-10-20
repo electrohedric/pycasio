@@ -1,14 +1,15 @@
-from typing import Protocol
-from .context import CasioContext
+import typing as _typing
+from . import context as _context
+# special imports so that code can safely do `from exceptions import *`
 
-class SupportsAST(Protocol):
+class SupportsAST(_typing.Protocol):
     lineno: int
     col_offset: int
     end_col_offset: int
 
 
 class CasioException(Exception):
-    def __init__(self, ctx: CasioContext, lineinfo: SupportsAST, msg: str, helptxt: str = None):
+    def __init__(self, ctx: _context.CasioContext, lineinfo: SupportsAST, msg: str, helptxt: str = None):
         lines = ctx.source.splitlines()
         self.file = ctx.filename
         self.line = "<Invalid lineno>"
@@ -30,7 +31,7 @@ class CasioException(Exception):
         HEADER = f"{'=' * 20} CASIO COMPILER {'=' * 20}"
         linespan = ''
         if self.end_col_offset != -1:
-            span = max(self.end_col_offset - self.col_offset, 0)
+            span = max(self.end_col_offset - self.col_offset - 1, 0)
             linespan = f"\n{' ' * self.col_offset}^{'~' * span}"
         return f"\n{HEADER}\nIn file {self.file}:\nLine {self.lineno}:\n{self.line}{linespan}\nError: {self.msg}{self.helptxt}"
 
@@ -38,4 +39,7 @@ class CasioImportException(CasioException):
     pass
 
 class CasioNameError(CasioException):
+    pass
+
+class CasioAssignmentError(CasioException):
     pass
