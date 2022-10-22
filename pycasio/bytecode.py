@@ -199,13 +199,13 @@ class Header:
         a4 = self.pad_bytecount + 84
         a5 = (self.pad_bytecount + 12) & 0xff
         # remove unallowed chars, trim to 8 chars
-        if not Header.verify_str(self.program_name, range(1,9)):
+        if not Header.verify_program_name(self.program_name):
             raise ValueError(f"{self.program_name} is not a valid program name")
         b2 = Header.convert_str(self.program_name)
         b4 = self.pad_bytecount + 8
         if b4 > 0xffff:
             raise ValueError(f"Program too large: {b4} bytes > {0xffff}")
-        if not Header.verify_str(self.password, range(9)):
+        if not Header.verify_password(self.password):
             raise ValueError(f"{self.password} is not a valid password")
         b6 = Header.convert_str(self.password)
         b7 = self.base_mode & 0x01
@@ -219,7 +219,15 @@ class Header:
         return struct.pack("B" * len(byteseq), *[255 - b for b in byteseq])
 
     @staticmethod
-    def verify_str(name: str, allowed_length: range):
+    def verify_program_name(name: str):
+        return Header._verify_str(name, range(1,9))
+
+    @staticmethod
+    def verify_password(password: str):
+        return Header._verify_str(password, range(9))
+
+    @staticmethod
+    def _verify_str(name: str, allowed_length: range):
         return len(name) in allowed_length and Header.ALLOWED_PROG_NAME.match(name)
 
     @staticmethod
