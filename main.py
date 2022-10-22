@@ -1,3 +1,5 @@
+import os
+
 import pycasio.compiler
 
 
@@ -6,4 +8,11 @@ print("="*100)
 context.dump_ast()
 print(context.symbols)
 print("== EXE ==")
-print(b"\n".join(context.code))
+for line in context.code:
+    print(line)
+
+if not os.path.exists("bin"):
+    os.mkdir("bin")
+
+with open("bin/superbasic.G1M",'wb') as f:
+    f.write(context.export("BASIC"))

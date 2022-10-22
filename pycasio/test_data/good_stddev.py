@@ -1,4 +1,4 @@
-# @test compiles
+
 from pycasio import casio
 
 

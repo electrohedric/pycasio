@@ -62,6 +62,9 @@ class TestLoader:
             return self.compile()
         except cex.CasioException:
             self.tester.fail(f"Test expected file to compile: {self.msg()}")
+        except Exception as e:
+            self.tester.fail(f"Test expected file to compile: {self.msg()}")
+            raise e
 
     def test_err_import(self):
         with self.tester.assertRaises(cex.CasioImportException, msg=self.msg()):
@@ -69,8 +72,8 @@ class TestLoader:
 
     def test_import(self, name, module_path):
         context = self.test_compiles()
-        self.tester.assertIn(name, context.casio, self.msg())
-        self.tester.assertEqual(context.casio[name], module_path, self.msg())
+        self.tester.assertIn(name, context.symbols, self.msg())
+        self.tester.assertEqual(context.symbols[name].value, module_path, self.msg())
 
 
 @cache

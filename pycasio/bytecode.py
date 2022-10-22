@@ -168,50 +168,55 @@ punctuation | , . ? : " '
 class Header:
     # header A is inverted: contains file info
     HEAD_A1 = b"USBPower1\x00\x10\x00\x10\x00"  # bytes file id, byte type id, unknown
-    # A2 = control byte (uint8): code+149
+    # A2 = control byte (uint8)
     HEAD_A3 = b"\x01"  # unknown
-    # A4 = file size (uint32): code+84
-    # A5 = control byte (uint8): code+12
+    # A4 = file size (uint32)
+    # A5 = control byte (uint8)
     HEAD_A6 = b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00\x01"  # bytes alignment, bytes number of objects
 
     # header B: contains program info
     HEAD_B1 = b"PROGRAM\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01system\x00\x00"  # file type
     # B2 = program name (8 bytes): ascii
     HEAD_B3 = b"\x01\x00\x00"  # unknown
-    # B4 = program size (uint16): code + 8
+    # B4 = program size (uint16)
     HEAD_B5 = b"\x00\x00\x00"  # unknown
     # B6 = password (8 bytes): ascii
     # B7 = mode (0b0000000B): B -> base mode
     HEAD_B8 = b"\x00"  # padding
 
-    ALLOWED_PROG_NAME = re.compile(r"^[A-Z0-9. \[\]{}'\"~+\-*/r@]+$")  # printables and +-*/, r, theta
+    ALLOWED_PROG_NAME = re.compile(r"^[A-Z0-9. \[\]{}'\"~+\-*/r@]*$")  # printables and +-*/, r, theta
 
     def __init__(self, bytecount: int, program_name: str, password: str = "", base_mode=False):
-        self.raw_bytecount = bytecount
+        self.actual_bytecount = bytecount + 2  # 2/4 bytes already used in the first 4-byte section
         self.program_name = program_name
         self.password = password
         self.base_mode = base_mode
 
-        # 2 alignment bytes + your code + 1 null byte (+ ceiling pads for 4-byte alignment)
-        code = 4 * math.ceil((self.raw_bytecount + 3) / 4)  # bytes required for your code
-        self.casio_bytecount = code + 28  # number of bytes casio says your program uses
-        a2 = (code + 149) & 0xff
-        a4 = code + 84
-        a5 = (code + 12) & 0xff
+        # your code + 1 null byte (+ ceiling pads for 4-byte alignment)
+        self.pad_bytecount = 4 * math.ceil((self.actual_bytecount + 1) / 4)  # bytes required for your code
+        self.casio_bytecount = self.pad_bytecount + 28  # number of bytes casio says your program uses
+        a2 = (self.pad_bytecount + 149) & 0xff
+        a4 = self.pad_bytecount + 84
+        a5 = (self.pad_bytecount + 12) & 0xff
         # remove unallowed chars, trim to 8 chars
         if not Header.verify_str(self.program_name, range(1,9)):
             raise ValueError(f"{self.program_name} is not a valid program name")
         b2 = Header.convert_str(self.program_name)
-        b4 = code + 8
+        b4 = self.pad_bytecount + 8
         if b4 > 0xffff:
             raise ValueError(f"Program too large: {b4} bytes > {0xffff}")
         if not Header.verify_str(self.password, range(9)):
             raise ValueError(f"{self.password} is not a valid password")
         b6 = Header.convert_str(self.password)
         b7 = self.base_mode & 0x01
-        self.header = struct.pack(">14sB1sIB11s28s8s3sH3s8sB1s",
-                                  self.HEAD_A1, a2, self.HEAD_A3, a4, a5, self.HEAD_A6,
-                                  self.HEAD_B1, b2, self.HEAD_B3, b4, self.HEAD_B5, b6, b7, self.HEAD_B8)
+        inv_head_a = struct.pack(">14sB1sIB11s", self.HEAD_A1, a2, self.HEAD_A3, a4, a5, self.HEAD_A6)
+        head_b = struct.pack(">28s8s3sH3s8sB1s", self.HEAD_B1, b2, self.HEAD_B3, b4, self.HEAD_B5, b6, b7, self.HEAD_B8)
+        head_a = Header.invert_bytes(inv_head_a)
+        self.bytes = head_a + head_b
+
+    @staticmethod
+    def invert_bytes(byteseq: bytes) -> bytes:
+        return struct.pack("B" * len(byteseq), *[255 - b for b in byteseq])
 
     @staticmethod
     def verify_str(name: str, allowed_length: range):

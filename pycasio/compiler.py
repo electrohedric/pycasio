@@ -18,6 +18,12 @@ def resolve_attr(attr: ast.Attribute) -> list[str]:
 
 
 class CasioNodeVisitor(ast.NodeVisitor):
+    # some attributes do not directly translate to casio code
+    # so the convention is as follows:
+    # if a node translates to a line of code, it will append casio bytes to the context's lines
+    # if a node does not translate to a line of code, it will return a special object
+    # if a node translates to code (but not a line,) it will return casio bytes
+
     def __init__(self, context: CasioContext):
         self.ctx = context
 
@@ -31,21 +37,21 @@ class CasioNodeVisitor(ast.NodeVisitor):
                                        f"Right side of assignment ({type(node).__name__}) evaluates to NULL")
         return node_eval
 
-    def visit_Import(self, node: ast.Import) -> Any:
+    def visit_Import(self, node: ast.Import) -> None:
         POSSIBLE_MODULES = mh.get_pycasio_modules()
 
         # import pycasio, pycasio.casio, abc
         for name in node.names:
             if name.name in POSSIBLE_MODULES:
                 # import pycasio, pycasio.casio
-                self.ctx.symbols[name.asname or name.name] = mh.ModulePath(name.name)
+                self.ctx.symbols.new(name.asname or name.name, mh.ModulePath(name.name), False)
             elif mh.PACKAGE.is_child(name.name):
                 # import pycasio.invalid
                 raise CasioImportException(self.ctx, name,
                                            f"{name.name} is not a {__package__} module",
                                            f"Possible modules: {list(sorted(str(x) for x in POSSIBLE_MODULES))}")
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         POSSIBLE_MODULES = mh.get_pycasio_modules()
         POSSIBLE_FUNCTIONS = mh.get_pycasio_functions()
 
@@ -88,19 +94,18 @@ class CasioNodeVisitor(ast.NodeVisitor):
                                                f"Possible functions: {list(sorted(valid_func_names))}")
                 # from pycasio.casio.lib_name import func_name
 
-            self.ctx.symbols[name.asname or name.name] = full_name
+            self.ctx.symbols.new(name.asname or name.name, full_name, False)
 
-    def visit_Name(self, node: ast.Name) -> Any:
+    def visit_Name(self, node: ast.Name) -> bytes:
         # variable_name
-        print("NAME!")
-        value = node.id
-        if value in self.ctx.symbols:
-            pass  # TODO: blah
+        name = node.id
+        if sym := self.ctx.symbols.get(name):
+            return sym.var
         else:
             raise CasioNameError(self.ctx, node,
-                                 f"{value} is not defined")
+                                 f"{name} is not defined")
 
-    def visit_Attribute(self, node: ast.Attribute) -> Any:
+    def visit_Attribute(self, node: ast.Attribute) -> mh.ModulePath:
         # module.path.attribute
         value = ".".join(resolve_attr(node))
         full_ref = self.ctx.lookup_casio_ref(value)
@@ -115,7 +120,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
         # module.func() aka some special casio function
         pass
 
-    def visit_Constant(self, node: ast.Constant) -> Any:
+    def visit_Constant(self, node: ast.Constant) -> bytes:
         if isinstance(node, str):
             return b'"' + str(node.value).encode() + b'"'
         else:  # a number
@@ -124,13 +129,15 @@ class CasioNodeVisitor(ast.NodeVisitor):
             node.value = min(max(node.value, -CASIO_MAX), CASIO_MAX)
             return str(node.value).encode().replace(b"e", B.EXP)
 
-    def visit_BinOp(self, node: ast.BinOp) -> Any:
+    def visit_BinOp(self, node: ast.BinOp) -> bytes:
         left, op, right = node.left, node.op, node.right
         left_eval = self.check_eval(left)
         right_eval = self.check_eval(right)
 
         def simple_bin(operator: bytes):
-            return left_eval + operator + right_eval
+            # TODO: don't need to add parenthesis if the prescendance of the outside operator
+            #       is less than or equal to our operator
+            return b"(" + left_eval + operator + right_eval + b")"
 
         if isinstance(op, ast.Mult):
             return simple_bin(B.MULTIPLY)
@@ -157,14 +164,19 @@ class CasioNodeVisitor(ast.NodeVisitor):
         # TODO: and more
         pass
 
-    def visit_Assign(self, node: ast.Assign) -> Any:
+    def visit_Assign(self, node: ast.Assign) -> None:
         left = node.targets
         right = node.value
         right_eval = self.check_eval(right)
+        is_code = isinstance(right_eval, bytes)
         for left_sym in left:
             if isinstance(left_sym, ast.Name):
-                self.ctx.symbols[left_sym.id] = right_eval
-                self.ctx.code.append(right_eval + B.ASSIGN + b"X")
+                sym = self.ctx.symbols.new(left_sym.id, right_eval, is_code)
+                # only add code if it makes sense
+                # it's allowed for the programmer to make assignments to things that aren't relevant to casio
+                # such as modules, or references to matrices
+                if is_code:
+                    self.ctx.code.append(right_eval + B.ASSIGN + sym.var)
             else:
                 raise CasioAssignmentError(self.ctx, left_sym,
                                            "Can't assign to this symbol")
