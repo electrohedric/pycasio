@@ -4,7 +4,7 @@ from typing import Any
 
 from . import module_helper as mh
 from .exceptions import *
-from .bytecode import *
+from .bytecode import Bytecode as B
 from .context import CasioContext
 
 
@@ -119,9 +119,10 @@ class CasioNodeVisitor(ast.NodeVisitor):
         if isinstance(node, str):
             return b'"' + str(node.value).encode() + b'"'
         else:  # a number
+            # python's floating point max is around 1.7e308. casio's is this
             CASIO_MAX = 9.999999999e99
             node.value = min(max(node.value, -CASIO_MAX), CASIO_MAX)
-            return str(node.value).encode().replace(b"e", EXP)
+            return str(node.value).encode().replace(b"e", B.EXP)
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         left, op, right = node.left, node.op, node.right
@@ -132,27 +133,27 @@ class CasioNodeVisitor(ast.NodeVisitor):
             return left_eval + operator + right_eval
 
         if isinstance(op, ast.Mult):
-            return simple_bin(MULTIPLY)
+            return simple_bin(B.MULTIPLY)
         elif isinstance(op, ast.Add):
-            return simple_bin(ADD)
+            return simple_bin(B.ADD)
         elif isinstance(op, ast.Sub):
-            return simple_bin(SUBTRACT)
+            return simple_bin(B.SUBTRACT)
         elif isinstance(op, ast.Div):
-            return simple_bin(DIVIDE)
+            return simple_bin(B.DIVIDE)
         elif isinstance(op, ast.Eq):
             return simple_bin(b"=")
         elif isinstance(op, ast.NotEq):
-            return simple_bin(NOT_EQUAL)
+            return simple_bin(B.NOT_EQUAL)
         elif isinstance(op, ast.And):
-            return simple_bin(AND)
+            return simple_bin(B.AND)
         elif isinstance(op, ast.Or):
-            return simple_bin(OR)
+            return simple_bin(B.OR)
         elif isinstance(op, ast.BitXor):
-            return simple_bin(XOR)
+            return simple_bin(B.XOR)
         elif isinstance(op, ast.Pow):
-            return simple_bin(POWER)
+            return simple_bin(B.POWER)
         elif isinstance(op, ast.FloorDiv):
-            return FLOOR + b"(" + simple_bin(DIVIDE) + b")"
+            return B.FLOOR + b"(" + simple_bin(B.DIVIDE) + b")"
         # TODO: and more
         pass
 
@@ -163,7 +164,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
         for left_sym in left:
             if isinstance(left_sym, ast.Name):
                 self.ctx.symbols[left_sym.id] = right_eval
-                self.ctx.code.append(right_eval + ASSIGN + b"X")
+                self.ctx.code.append(right_eval + B.ASSIGN + b"X")
             else:
                 raise CasioAssignmentError(self.ctx, left_sym,
                                            "Can't assign to this symbol")
