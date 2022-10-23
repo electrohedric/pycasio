@@ -67,7 +67,7 @@ class TestLoader:
             raise e
 
     def test_err_import(self):
-        with self.tester.assertRaises(cex.CasioImportException, msg=self.msg()):
+        with self.tester.assertRaises(cex.CasioImportError, msg=self.msg()):
             self.compile()
 
     def test_import(self, name, module_path):

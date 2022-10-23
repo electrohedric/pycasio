@@ -1,5 +1,7 @@
 import ast
 import os.path
+import sys
+import warnings
 from typing import Any
 
 from . import module_helper as mh
@@ -47,7 +49,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
                 self.ctx.symbols.new(name.asname or name.name, mh.ModulePath(name.name), False)
             elif mh.PACKAGE.is_child(name.name):
                 # import pycasio.invalid
-                raise CasioImportException(self.ctx, name,
+                raise CasioImportError(self.ctx, name,
                                            f"{name.name} is not a {__package__} module",
                                            f"Possible modules: {list(sorted(str(x) for x in POSSIBLE_MODULES))}")
 
@@ -62,7 +64,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
 
         # from pycasio.? import ?
         if mod not in POSSIBLE_MODULES:
-            raise CasioImportException(self.ctx, node,
+            raise CasioImportError(self.ctx, node,
                                        f"{node.module} is not a valid {__package__} module",
                                        f"Possible modules: {list(sorted(str(x) for x in POSSIBLE_MODULES))}")
 
@@ -78,7 +80,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
                 if full_name not in POSSIBLE_MODULES:
                     # from pycasio import invalid
                     # from pycasio.casio import invalid
-                    raise CasioImportException(self.ctx, name,
+                    raise CasioImportError(self.ctx, name,
                                                f"{name.name} is not a valid {node.module} module",
                                                f"Possible modules: {list(sorted(str(x) for x in mod.get_direct_children(POSSIBLE_MODULES)))}")
                 # from pycasio import casio
@@ -89,7 +91,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
 
                 if name.name not in valid_func_names:
                     # from pycasio.casio.lib_name import invalid
-                    raise CasioImportException(self.ctx, name,
+                    raise CasioImportError(self.ctx, name,
                                                f"{name.name} is not a valid {node.module} function",
                                                f"Possible functions: {list(sorted(valid_func_names))}")
                 # from pycasio.casio.lib_name import func_name
@@ -113,12 +115,26 @@ class CasioNodeVisitor(ast.NodeVisitor):
             # is a casio alias
             return full_ref
         else:
-            raise CasioImportException(self.ctx, node,
+            raise CasioImportError(self.ctx, node,
                                        f"{value} is not a valid casio reference")
 
+    def visit_Expr(self, node: ast.Expr) -> Any:
+        # code that is not an assignment or control flow
+        # ex + pr
+        # print()
+        # module.func()
+        exp = node.value
+        if isinstance(exp, ast.Call):
+            func_eval = self.check_eval(exp)
+            self.ctx.code.append(func_eval)
+        else:
+            warnings.warn(CasioNoStatementWarning(self.ctx, node, "Statement has no effect"))
+
     def visit_Call(self, node: ast.Call) -> Any:
+        # print()
         # module.func() aka some special casio function
-        pass
+
+        raise CasioNotImplementedException(self.ctx, node, "Call not supported yet")
 
     def visit_Constant(self, node: ast.Constant) -> bytes:
         if isinstance(node, str):
