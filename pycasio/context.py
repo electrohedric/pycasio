@@ -1,6 +1,16 @@
+import enum
+
 from . import module_helper as mh
 from .bytecode import Bytecode as B, Header
 import ast
+
+
+class CasioType(enum.Enum):
+    NULL = "null"
+    NUMBER = "num"
+    STRING = "str"
+    # LIST = "list"
+    # MATRIX = "mat"
 
 
 def get_casio_ref_type(ref: mh.ModulePath):
@@ -25,9 +35,10 @@ def get_casio_ref_type(ref: mh.ModulePath):
 
 
 class Symbol:
-    def __init__(self, name: str, value):
+    def __init__(self, name: str, value, var_type: CasioType):
         self.name = name  # actual name in the program
         self.value = value  # no idea
+        self.type = var_type
         self.var: bytes|None = None  # casio var symbol
 
     def __hash__(self):
@@ -50,14 +61,17 @@ class SymbolTable(dict):
         super().__init__()
         # X and Y are volatile because they get set automatically sometimes when doing graph operations
         # TODO: find out when and either avoid using those functions or report here that it's hopeless
-        self.free_vars = [B.THETA, B.RADIUS] + [x.encode() for x in "ZWVUTSRQPONMLKJIHGFEDCBA"]
+        self.free_vars = {
+            CasioType.NUMBER: [B.THETA, B.RADIUS] + [x.encode() for x in "ZWVUTSRQPONMLKJIHGFEDCBA"],
+            CasioType.STRING: [B.STRING + str(x).encode() for x in range(1, 21)]
+        }
 
     def get(self, __key: str) -> Symbol | None:
         return super().get(__key)
 
-    def new(self, name: str, value, alloc: bool) -> Symbol:
-        sym = Symbol(name, value)
-        if alloc:
+    def new(self, var_type: CasioType, name: str, value) -> Symbol:
+        sym = Symbol(name, value, var_type)
+        if var_type != CasioType.NULL:
             self.alloc(sym)
         self.add(sym)
         return sym
@@ -67,11 +81,12 @@ class SymbolTable(dict):
 
     def alloc(self, sym: Symbol):
         assert sym.var is None, "double alloc!"
-        sym.var = self.free_vars.pop()
+        assert sym.type != CasioType.NULL
+        sym.var = self.free_vars[sym.type].pop()
 
     def free(self, sym: Symbol):
         if sym.var is not None:
-            sym.var = self.free_vars.append(sym.var)  # returns None
+            sym.var = self.free_vars[sym.type].append(sym.var)  # returns None
 
 
 class CasioContext:

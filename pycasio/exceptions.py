@@ -1,6 +1,8 @@
 import typing as _typing
 from . import context as _context
-# special imports so that code can safely do `from exceptions import *`
+
+
+# special imports so that modules can safely do `from exceptions import *`
 
 class SupportsAST(_typing.Protocol):
     lineno: int
@@ -36,17 +38,14 @@ class CasioException(Exception):
         etype = "Warning" if isinstance(self, Warning) else "Error"
         return f"\n{HEADER}\nIn file {self.file}:\nLine {self.lineno}:\n{self.line}{linespan}\n{etype}: {self.msg}{self.helptxt}"
 
-class CasioImportError(CasioException):
-    pass
 
-class CasioNameError(CasioException):
-    pass
-
-class CasioAssignmentError(CasioException):
-    pass
-
-class CasioNoStatementWarning(CasioException, Warning):
-    pass
-
-class CasioNotImplementedException(CasioException):
-    pass
+# @formatter:off
+class CasioImportError(CasioException): pass
+class CasioNameError(CasioException): pass
+class CasioAssignmentError(CasioException): pass
+class CasioNoStatementWarning(CasioException, Warning): pass
+class CasioNotImplementedException(CasioException): pass
+class CasioNotSupportedError(CasioException): pass
+class CasioOperationError(CasioException): pass
+class CasioAllocationException(CasioException): pass
+class CasioTypeError(CasioException): pass
