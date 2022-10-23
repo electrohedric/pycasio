@@ -35,8 +35,12 @@ class CasioException(Exception):
         if self.end_col_offset != -1:
             span = max(self.end_col_offset - self.col_offset - 1, 0)
             linespan = f"\n{' ' * self.col_offset}^{'~' * span}"
-        etype = "Warning" if isinstance(self, Warning) else "Error"
-        return f"\n{HEADER}\nIn file {self.file}:\nLine {self.lineno}:\n{self.line}{linespan}\n{etype}: {self.msg}{self.helptxt}"
+        return f"\n" \
+               f"{HEADER}\n" \
+               f"In file {self.file}:\n" \
+               f"Line {self.lineno}:\n" \
+               f"{self.line}{linespan}\n" \
+               f"{self.__class__.__name__}: {self.msg}{self.helptxt}"
 
 
 # @formatter:off

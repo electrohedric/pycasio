@@ -28,6 +28,12 @@ def get_type(o):
     return CasioType.NULL
 
 
+class Code:
+    def __init__(self, raw_code: bytes, expr_type: CasioType):
+        self.bytes = raw_code
+        self.type = expr_type
+
+
 class CasioNodeVisitor(ast.NodeVisitor):
     # some attributes do not directly translate to casio code
     # so the convention is as follows:
@@ -37,16 +43,14 @@ class CasioNodeVisitor(ast.NodeVisitor):
 
     def __init__(self, context: CasioContext):
         self.ctx = context
-        self.last_eval_type = None
 
-    def check_eval(self, node: ast.expr):
+    def check_eval(self, node) -> Code:
         # evaluate the value of the node by executing visit_<NodeType>
         node_eval = self.visit(node)
-        if node_eval is None:
+        if not isinstance(node_eval, Code):
             # TODO: convert to assert. more of a check for me since unknown visit calls will return None
             # but for now the exact location printout is very nice
-            raise CasioAssignmentError(self.ctx, node,
-                                       f"{type(node).__name__} evaluates to NULL")
+            raise CasioAssignmentError(self.ctx, node, f"{type(node).__name__} is NOT Code")
         return node_eval
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -109,12 +113,11 @@ class CasioNodeVisitor(ast.NodeVisitor):
 
             self.ctx.symbols.new(CasioType.NULL, name.asname or name.name, full_name)
 
-    def visit_Name(self, node: ast.Name) -> bytes:
+    def visit_Name(self, node: ast.Name) -> Code:
         # variable_name
         name = node.id
         if sym := self.ctx.symbols.get(name):
-            self.last_eval_type = sym.type
-            return sym.var
+            return Code(sym.var, sym.type)
         else:
             raise CasioNameError(self.ctx, node,
                                  f"{name} is not defined")
@@ -139,11 +142,11 @@ class CasioNodeVisitor(ast.NodeVisitor):
         if isinstance(exp, ast.Call):
             # TODO: must check for functions which cannot be expressions like ?->A
             func_eval = self.check_eval(exp)
-            self.ctx.code.append(func_eval)
+            self.ctx.code.append(func_eval.bytes)
         else:
             warnings.warn(CasioNoStatementWarning(self.ctx, node, "Statement has no effect"))
 
-    def visit_Call(self, node: ast.Call) -> bytes:
+    def visit_Call(self, node: ast.Call) -> Code:
         # print()
         # module.func() aka some special casio function
         if isinstance(node.func, ast.Name):
@@ -157,27 +160,29 @@ class CasioNodeVisitor(ast.NodeVisitor):
                                           f"Too many arguments for {func_name} call, "
                                           f"expected {count}, got {len(node.args)}")
 
-        last_arg: ast.AST|None = None
+        last_arg: SupportsAST|None = None
+        last_code: Code|None = None
 
         def check_type(expected):
-            if self.last_eval_type != expected:
-                raise CasioTypeError(self.ctx, last_arg, f"{func_name} expects {expected}, not {self.last_eval_type}")
+            if last_code.type != expected:
+                raise CasioTypeError(self.ctx, last_arg, f"{func_name} expects {expected}, not {last_code.type}")
 
-        def eval_arg(i):
-            nonlocal last_arg
+        def eval_arg(i) -> Code:
+            nonlocal last_arg, last_code
             if len(node.args) <= i:
                 raise CasioOperationError(self.ctx, node,
                                           f"Not enough arguments for {func_name} call, expected arg {i}")
             arg = node.args[i]
             last_arg = arg
-            return self.check_eval(arg)
+            last_code = self.check_eval(arg)
+            return last_code
 
         # check supported built-in functions first, everything else is unsupported
         if func_name == "abs":
             check_args(1)
             n = eval_arg(0)
             check_type(CasioType.NUMBER)
-            return B.ABSOLUTE + b"(" + n + b")"
+            return Code(B.ABSOLUTE + b"(" + n.bytes + b")", CasioType.NUMBER)
         elif func_name == "complex":
             raise CasioNotImplementedException(self.ctx, node, f"{func_name} not implemented yet")
         elif func_name == "input":
@@ -187,12 +192,13 @@ class CasioNodeVisitor(ast.NodeVisitor):
             else:  # 1
                 s = eval_arg(0)
                 check_type(CasioType.STRING)
-                r = s + b"?"
-            self.last_eval_type = CasioType.STRING
-            return r
+                r = s.bytes + b"?"
+            return Code(r, CasioType.STRING)
         elif func_name == "int":
-            self.last_eval_type = CasioType.NUMBER
-            raise CasioNotImplementedException(self.ctx, node, f"{func_name} not implemented yet")
+            check_args(1)
+            n = eval_arg(0)
+            check_type(CasioType.NUMBER)
+            return Code(B.INT + b"(" + n + b")", CasioType.NUMBER)
         elif func_name == "len":
             raise CasioNotImplementedException(self.ctx, node, f"{func_name} not implemented yet")
         elif func_name == "list":
@@ -202,7 +208,14 @@ class CasioNodeVisitor(ast.NodeVisitor):
         elif func_name == "min":
             raise CasioNotImplementedException(self.ctx, node, f"{func_name} not implemented yet")
         elif func_name == "print":
-            self.last_eval_type = CasioType.NULL
+            if len(node.args) == 0:
+                # skip empty prints
+                return Code(b"", CasioType.NULL)
+            elif len(node.args) == 1:
+                u = eval_arg(0)
+                if u.type == CasioType.NULL:  # TODO: this should fire
+                    raise CasioTypeError(self.ctx, node, f"{func_name} expects something. This parameter returns NULL")
+                return Code(u.bytes + B.DISP, CasioType.NULL)
         elif func_name == "range":
             raise CasioNotImplementedException(self.ctx, node, f"{func_name} not implemented yet")
         elif func_name == "round":
@@ -216,32 +229,32 @@ class CasioNodeVisitor(ast.NodeVisitor):
 
         # raise CasioNotImplementedException(self.ctx, node, "Call not supported yet")
 
-    def visit_Constant(self, node: ast.Constant) -> bytes:
-        self.last_eval_type = get_type(node.value)
+    def visit_Constant(self, node: ast.Constant) -> Code:
         if isinstance(node.value, str):
-            return b'"' + str(node.value).encode() + b'"'
+            return Code(b'"' + str(node.value).encode() + b'"', CasioType.STRING)
         elif isinstance(node.value, int) or isinstance(node.value, float):  # a number
             # python's floating point max is around 1.7e308. casio's is this
             CASIO_MAX = 9.999999999e99
             node.value = min(max(node.value, -CASIO_MAX), CASIO_MAX)
-            return str(node.value).encode().replace(b"e", B.EXP)
+            return Code(str(node.value).encode().replace(b"e", B.EXP), CasioType.NUMBER)
         else:
-            raise CasioNotSupportedError(self.ctx, node, f"{self.last_eval_type.__name__} type not supported")
+            raise CasioNotSupportedError(self.ctx, node, f"{type(node.value).__name__} type not supported")
 
-    def visit_BinOp(self, node: ast.BinOp) -> bytes:
+    def visit_BinOp(self, node: ast.BinOp) -> Code:
         left, op, right = node.left, node.op, node.right
         left_eval = self.check_eval(left)
-        type1 = self.last_eval_type
         right_eval = self.check_eval(right)
-        type2 = self.last_eval_type
-        if type1 != type2:
-            raise CasioOperationError(self.ctx, node, f"Types are not compatible: {type1} and {type2}")
-        self.last_eval_type = type1
+        if left_eval.type != right_eval.type:
+            raise CasioTypeError(self.ctx, node,
+                                 f"Types are not compatible: {left_eval.type} and {right_eval.type}")
+        if left_eval.type != CasioType.NUMBER:
+            # TODO: implement string ops too
+            raise CasioTypeError(self.ctx, node, "Binary operations only supported with integers")
 
         def simple_bin(operator: bytes):
             # TODO: don't need to add parenthesis if the prescendance of the outside operator
             #       is less than or equal to our operator
-            return b"(" + left_eval + operator + right_eval + b")"
+            return Code(b"(" + left_eval.bytes + operator + right_eval.bytes + b")", left_eval.type)
 
         if isinstance(op, ast.Mult):
             return simple_bin(B.MULTIPLY)
@@ -264,23 +277,26 @@ class CasioNodeVisitor(ast.NodeVisitor):
         elif isinstance(op, ast.Pow):
             return simple_bin(B.POWER)
         elif isinstance(op, ast.FloorDiv):
-            return B.FLOOR + b"(" + simple_bin(B.DIVIDE) + b")"
+            return Code(B.FLOOR + b"(" + left_eval.bytes + B.DIVIDE + right_eval.bytes + b")", CasioType.NUMBER)
         # TODO: and more
         pass
 
     def visit_Assign(self, node: ast.Assign) -> None:
         left = node.targets
         right = node.value
-        right_eval = self.check_eval(right)
-        is_code = isinstance(right_eval, bytes)
+        right_eval = self.visit(right)
         for left_sym in left:
             if isinstance(left_sym, ast.Name):
-                sym = self.ctx.symbols.new(self.last_eval_type, left_sym.id, right_eval)
-                # only add code if it makes sense
-                # it's allowed for the programmer to make assignments to things that aren't relevant to casio
-                # such as modules, or references to matrices
-                if is_code:
-                    self.ctx.code.append(right_eval + B.ASSIGN + sym.var)
+                if isinstance(right_eval, Code):
+                    sym = self.ctx.symbols.new(right_eval.type, left_sym.id, right_eval.bytes)
+                    # only add code if it makes sense
+                    # it's allowed for the programmer to make assignments to things that aren't relevant to casio
+                    # such as modules, or references to matrices
+                    self.ctx.code.append(right_eval.bytes + B.ASSIGN + sym.var)
+                elif isinstance(right_eval, mh.ModulePath):
+                    self.ctx.symbols.new(CasioType.NULL, left_sym.id, right_eval)
+                else:
+                    raise CasioAssignmentError(self.ctx, left_sym, "This symbol is nonsense")
             else:
                 raise CasioAssignmentError(self.ctx, left_sym,
                                            "Can't assign to this symbol")
