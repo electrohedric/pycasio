@@ -2,6 +2,7 @@ import ast
 import os.path
 import warnings
 from typing import Any
+from enum import IntFlag
 
 from . import module_helper as mh
 from .exceptions import *
@@ -28,10 +29,33 @@ def get_type(o):
     return CasioType.NULL
 
 
+class CodeFlags(IntFlag):
+    NONE = 0b0000
+    PREVENT_EXPRESSION = 0b0001
+    PREVENT_ASSIGNMENT = 0b0010
+    PREVENT_ARGUMENT = 0b0100
+    HAS_SIDE_EFFECTS = 0b1000
+
+    def debug_msg(self):
+        can_expr = not (self & CodeFlags.PREVENT_EXPRESSION)
+        can_assign = not (self & CodeFlags.PREVENT_ASSIGNMENT)
+        can_arg = not (self & CodeFlags.PREVENT_ARGUMENT)
+
+        # common combinations and their meanings
+        if can_expr and not can_assign and not can_arg:
+            return "This expression must be used like a statement"
+        if not can_expr and can_assign and not can_arg:
+            return "This expression must be used in an assignment"
+        return ""
+
+
 class Code:
-    def __init__(self, raw_code: bytes, expr_type: CasioType):
+    def __init__(self, raw_code: bytes, expr_type: CasioType, flags=CodeFlags.NONE):
         self.bytes = raw_code
         self.type = expr_type
+        self.flags = flags
+        if self.type == CasioType.NULL:
+            self.flags |= CodeFlags.PREVENT_ASSIGNMENT | CodeFlags.PREVENT_ARGUMENT
 
 
 class CasioNodeVisitor(ast.NodeVisitor):
@@ -140,11 +164,18 @@ class CasioNodeVisitor(ast.NodeVisitor):
         # module.func()
         exp = node.value
         if isinstance(exp, ast.Call):
-            # TODO: must check for functions which cannot be expressions like ?->A
             func_eval = self.check_eval(exp)
-            self.ctx.code.append(func_eval.bytes)
+            if func_eval.flags & CodeFlags.PREVENT_EXPRESSION:
+                raise CasioOperationError(self.ctx, exp, f"This call cannot be used as a statement",
+                                          helptxt=func_eval.flags.debug_msg())
+            if func_eval.flags & CodeFlags.HAS_SIDE_EFFECTS:
+                self.ctx.code.append(func_eval.bytes)
+            else:
+                warnings.warn(CasioNoStatementWarning(self.ctx, node,
+                                                      "Call has no side effects and will not be included"))
         else:
-            warnings.warn(CasioNoStatementWarning(self.ctx, node, "Statement has no effect"))
+            warnings.warn(CasioNoStatementWarning(self.ctx, node,
+                                                  "Statement has no effect and will not be included"))
 
     def visit_Call(self, node: ast.Call) -> Code:
         # print()
@@ -175,6 +206,12 @@ class CasioNodeVisitor(ast.NodeVisitor):
             arg = node.args[i]
             last_arg = arg
             last_code = self.check_eval(arg)
+            if last_code.type == CasioType.NULL:
+                raise CasioTypeError(self.ctx, arg, f"This expression does not return a value",
+                                     helptxt=last_code.flags.debug_msg())
+            if last_code.flags & CodeFlags.PREVENT_ARGUMENT:
+                raise CasioOperationError(self.ctx, arg, f"This expression cannot be used as an argument",
+                                          helptxt=last_code.flags.debug_msg())
             return last_code
 
         # check supported built-in functions first, everything else is unsupported
@@ -193,7 +230,8 @@ class CasioNodeVisitor(ast.NodeVisitor):
                 s = eval_arg(0)
                 check_type(CasioType.STRING)
                 r = s.bytes + b"?"
-            return Code(r, CasioType.STRING)
+            return Code(r, CasioType.STRING,
+                        CodeFlags.PREVENT_ARGUMENT | CodeFlags.PREVENT_EXPRESSION | CodeFlags.HAS_SIDE_EFFECTS)
         elif func_name == "int":
             check_args(1)
             n = eval_arg(0)
@@ -210,12 +248,10 @@ class CasioNodeVisitor(ast.NodeVisitor):
         elif func_name == "print":
             if len(node.args) == 0:
                 # skip empty prints
-                return Code(b"", CasioType.NULL)
+                return Code(b"", CasioType.NULL, CodeFlags.HAS_SIDE_EFFECTS)
             elif len(node.args) == 1:
                 u = eval_arg(0)
-                if u.type == CasioType.NULL:  # TODO: this should fire
-                    raise CasioTypeError(self.ctx, node, f"{func_name} expects something. This parameter returns NULL")
-                return Code(u.bytes + B.DISP, CasioType.NULL)
+                return Code(u.bytes + B.DISP, CasioType.NULL, CodeFlags.HAS_SIDE_EFFECTS)
         elif func_name == "range":
             raise CasioNotImplementedException(self.ctx, node, f"{func_name} not implemented yet")
         elif func_name == "round":
@@ -283,11 +319,17 @@ class CasioNodeVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         left = node.targets
-        right = node.value
+        right = node.value  # type: ast.AST|ast.expr
         right_eval = self.visit(right)
         for left_sym in left:
             if isinstance(left_sym, ast.Name):
                 if isinstance(right_eval, Code):
+                    if right_eval.type == CasioType.NULL:
+                        raise CasioTypeError(self.ctx, right, "This expression does not return a value",
+                                             helptxt=right_eval.flags.debug_msg())
+                    if right_eval.flags & CodeFlags.PREVENT_ASSIGNMENT:
+                        raise CasioOperationError(self.ctx, right, "This expression cannot be used in an assignment",
+                                                  helptxt=right_eval.flags.debug_msg())
                     sym = self.ctx.symbols.new(right_eval.type, left_sym.id, right_eval.bytes)
                     # only add code if it makes sense
                     # it's allowed for the programmer to make assignments to things that aren't relevant to casio
@@ -298,8 +340,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
                 else:
                     raise CasioAssignmentError(self.ctx, left_sym, "This symbol is nonsense")
             else:
-                raise CasioAssignmentError(self.ctx, left_sym,
-                                           "Can't assign to this symbol")
+                raise CasioAssignmentError(self.ctx, left_sym, "Can't assign to this symbol")
 
 
 def compile_source(filename: str, src: str) -> CasioContext:
