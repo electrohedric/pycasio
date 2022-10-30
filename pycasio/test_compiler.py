@@ -7,6 +7,7 @@ from unittest import TestCase
 
 from . import compiler
 from . import exceptions as cex
+from . import module_helper as mh
 
 
 class TestCompiler(TestCase):
@@ -42,7 +43,8 @@ class TestLoader:
             def some_func(fake_self):
                 self.tester = fake_self
                 self.line_no = line_num
-                test_method(self, *args)  # some method in this class beginning with "test_"
+                vargs = [parse_value(a) for a in args]
+                test_method(self, *vargs)  # some method in this class beginning with "test_"
 
             # this is basically taken from https://stackoverflow.com/a/2799009
             # update class of interest with new test method
@@ -73,8 +75,16 @@ class TestLoader:
     def test_import(self, name, module_path):
         context = self.test_compiles()
         self.tester.assertIn(name, context.symbols, self.msg())
-        self.tester.assertEqual(context.symbols[name].value, module_path, self.msg())
+        import_sym = context.symbols[name].value
+        self.tester.assertIsInstance(import_sym, mh.ModulePath, self.msg())
+        self.tester.assertEqual(import_sym, module_path, self.msg())
 
+    def test_symbol(self, name, value):
+        context = self.test_compiles()
+        self.tester.assertIn(name, context.symbols, self.msg())
+        sym = context.symbols[name].value
+        self.tester.assertIsInstance(sym, type(value), self.msg())
+        self.tester.assertEqual(sym, value, self.msg())
 
 @cache
 def get_test_map() -> dict[str, callable]:
@@ -83,6 +93,15 @@ def get_test_map() -> dict[str, callable]:
         if inspect.isfunction(member) and name.startswith("test_"):
             d[name[5:]] = member  # remove test_
     return d
+
+
+def parse_value(v: str):
+    try:
+        return float(v)
+    except ValueError:
+        if v[0] == '"' and v[-1] == '"':
+            return v[1:-1]
+    return v
 
 
 def load_compiler_tests():
