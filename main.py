@@ -3,6 +3,7 @@ import os
 import pycasio.compiler
 
 
+# pycasio.compiler.DEBUG = True
 context = pycasio.compiler.compile_file("super_basic.py")
 print("="*100)
 context.dump_ast()

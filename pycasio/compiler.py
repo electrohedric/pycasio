@@ -7,7 +7,7 @@ from enum import IntFlag
 from . import module_helper as mh
 from .exceptions import *
 from .bytecode import Bytecode as B
-from .context import CasioContext, CasioType
+from .context import CasioContext, CasioType, CompilerFlags
 
 
 def resolve_attr(attr: ast.Attribute) -> list[str]:
@@ -17,7 +17,6 @@ def resolve_attr(attr: ast.Attribute) -> list[str]:
         return [attr.value.id, attr.attr]
     print("UNKNOWN SUB-ATTRIBUTE", attr.value)
     return []
-
 
 
 def get_type(o):
@@ -30,7 +29,7 @@ def get_type(o):
 
 
 class CodeFlags(IntFlag):
-    NONE = 0b0000
+    NONE = 0
     PREVENT_EXPRESSION = 0b0001
     PREVENT_ASSIGNMENT = 0b0010
     PREVENT_ARGUMENT = 0b0100
@@ -68,13 +67,19 @@ class CasioNodeVisitor(ast.NodeVisitor):
     def __init__(self, context: CasioContext):
         self.ctx = context
 
+    def warning(self, w):
+        if self.ctx.flags & CompilerFlags.IGNORE_WARNINGS:
+            return
+        warnings.warn(w)
+
     def check_eval(self, node) -> Code:
         # evaluate the value of the node by executing visit_<NodeType>
         node_eval = self.visit(node)
         if not isinstance(node_eval, Code):
             # TODO: convert to assert. more of a check for me since unknown visit calls will return None
             # but for now the exact location printout is very nice
-            raise CasioAssignmentError(self.ctx, node, f"{type(node).__name__} is NOT Code")
+            raise CasioAssignmentError(self.ctx, node,
+                                       f"{type(node).__name__} produced {type(node_eval).__name__} which is NOT Code")
         return node_eval
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -163,19 +168,20 @@ class CasioNodeVisitor(ast.NodeVisitor):
         # print()
         # module.func()
         exp = node.value
+        exp_eval = self.check_eval(exp)
         if isinstance(exp, ast.Call):
-            func_eval = self.check_eval(exp)
-            if func_eval.flags & CodeFlags.PREVENT_EXPRESSION:
+            if exp_eval.flags & CodeFlags.PREVENT_EXPRESSION:
                 raise CasioOperationError(self.ctx, exp, f"This call cannot be used as a statement",
-                                          helptxt=func_eval.flags.debug_msg())
-            if func_eval.flags & CodeFlags.HAS_SIDE_EFFECTS:
-                self.ctx.code.append(func_eval.bytes)
+                                          helptxt=exp_eval.flags.debug_msg())
+            if exp_eval.flags & CodeFlags.HAS_SIDE_EFFECTS:
+                self.ctx.code.append(exp_eval.bytes)
             else:
-                warnings.warn(CasioNoStatementWarning(self.ctx, node,
-                                                      "Call has no side effects and will not be included"))
+                self.warning(CasioNoStatementWarning(self.ctx, node,
+                                                     "Call has no side effects and will not be included"))
         else:
-            warnings.warn(CasioNoStatementWarning(self.ctx, node,
-                                                  "Statement has no effect and will not be included"))
+            self.warning(CasioNoStatementWarning(self.ctx, node,
+                                                 "Statement has no effect and will not be included"))
+        return exp_eval
 
     def visit_Call(self, node: ast.Call) -> Code:
         # print()
@@ -276,6 +282,22 @@ class CasioNodeVisitor(ast.NodeVisitor):
         else:
             raise CasioNotSupportedError(self.ctx, node, f"{type(node.value).__name__} type not supported")
 
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> Code:
+        expr, op = node.operand, node.op
+        expr_eval = self.check_eval(expr)
+        if expr_eval.type != CasioType.NUMBER:
+            raise CasioTypeError(self.ctx, node, "Unary operations only supported with numbers")
+
+        if isinstance(op, ast.USub):  # negative sign
+            return Code(B.NEGATIVE + expr_eval.bytes, expr_eval.type)
+        elif isinstance(op, ast.UAdd):  # positive sign
+            return expr_eval  # nothing needs to be changed
+        elif isinstance(op, ast.Not):
+            return Code(B.NOT + expr_eval.bytes, expr_eval.type)
+        # TODO: and more
+        raise CasioNotSupportedError(self.ctx, op, "This operation is not supported by Casio",
+                                     helptxt="Bitwise operators are unsupported")
+
     def visit_BinOp(self, node: ast.BinOp) -> Code:
         left, op, right = node.left, node.op, node.right
         left_eval = self.check_eval(left)
@@ -285,7 +307,7 @@ class CasioNodeVisitor(ast.NodeVisitor):
                                  f"Types are not compatible: {left_eval.type} and {right_eval.type}")
         if left_eval.type != CasioType.NUMBER:
             # TODO: implement string ops too
-            raise CasioTypeError(self.ctx, node, "Binary operations only supported with integers")
+            raise CasioTypeError(self.ctx, node, "Binary operations only supported with numbers")
 
         def simple_bin(operator: bytes):
             # TODO: don't need to add parenthesis if the prescendance of the outside operator
@@ -300,22 +322,32 @@ class CasioNodeVisitor(ast.NodeVisitor):
             return simple_bin(B.SUBTRACT)
         elif isinstance(op, ast.Div):
             return simple_bin(B.DIVIDE)
-        elif isinstance(op, ast.Eq):
+        elif isinstance(op, ast.Eq):  # FIXME Compare
             return simple_bin(b"=")
-        elif isinstance(op, ast.NotEq):
+        elif isinstance(op, ast.Lt):  # FIXME Compare
+            return simple_bin(b"<")
+        elif isinstance(op, ast.Gt):  # FIXME Compare
+            return simple_bin(b">")
+        elif isinstance(op, ast.LtE):  # FIXME Compare
+            return simple_bin(B.LT_EQUAL)
+        elif isinstance(op, ast.GtE):  # FIXME Compare
+            return simple_bin(B.GT_EQUAL)
+        elif isinstance(op, ast.NotEq):  # FIXME Compare
             return simple_bin(B.NOT_EQUAL)
-        elif isinstance(op, ast.And):
+        elif isinstance(op, ast.And):  # FIXME BoolOp
             return simple_bin(B.AND)
-        elif isinstance(op, ast.Or):
+        elif isinstance(op, ast.Or):  # FIXME BoolOp
             return simple_bin(B.OR)
-        elif isinstance(op, ast.BitXor):
-            return simple_bin(B.XOR)
         elif isinstance(op, ast.Pow):
             return simple_bin(B.POWER)
+        elif isinstance(op, ast.Mod):
+            return Code(B.MOD + left_eval.bytes + b"," + right_eval.bytes + b")", CasioType.NUMBER)
         elif isinstance(op, ast.FloorDiv):
             return Code(B.FLOOR + b"(" + left_eval.bytes + B.DIVIDE + right_eval.bytes + b")", CasioType.NUMBER)
-        # TODO: and more
-        pass
+        # TODO: and more?
+        # FIXME: <invalid lineno> when doing x^y, should at least print the line
+        raise CasioNotSupportedError(self.ctx, op, "This operation is not supported by Casio",
+                                     helptxt="Bitwise operators are unsupported")
 
     def visit_Assign(self, node: ast.Assign) -> None:
         left = node.targets
@@ -338,9 +370,14 @@ class CasioNodeVisitor(ast.NodeVisitor):
                 elif isinstance(right_eval, mh.ModulePath):
                     self.ctx.symbols.new(CasioType.NULL, left_sym.id, right_eval)
                 else:
-                    raise CasioAssignmentError(self.ctx, left_sym, "This symbol is nonsense")
+                    raise CasioAssignmentError(self.ctx, right,
+                                               f"Can't assign to this expression "
+                                               f"(couldn't parse {right.__class__.__name__})")
             else:
                 raise CasioAssignmentError(self.ctx, left_sym, "Can't assign to this symbol")
+
+
+DEBUG = False
 
 
 def compile_source(filename: str, src: str) -> CasioContext:
@@ -351,9 +388,11 @@ def compile_source(filename: str, src: str) -> CasioContext:
     :param src: source code of said file
     """
     node = ast.parse(src)
+    if DEBUG:
+        print(ast.dump(node, indent=2))
     context = CasioContext(filename, src, node)
-    vistor = CasioNodeVisitor(context)
-    vistor.visit(node)
+    visitor = CasioNodeVisitor(context)
+    visitor.visit(node)
     return context
 
 

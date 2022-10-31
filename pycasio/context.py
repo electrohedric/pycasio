@@ -3,6 +3,7 @@ import enum
 from . import module_helper as mh
 from .bytecode import Bytecode as B, Header
 import ast
+from enum import IntFlag
 
 
 class CasioType(enum.Enum):
@@ -89,13 +90,19 @@ class SymbolTable(dict):
             sym.var = self.free_vars[sym.type].append(sym.var)  # returns None
 
 
+class CompilerFlags(IntFlag):
+    NONE = 0
+    IGNORE_WARNINGS = 0b1
+
+
 class CasioContext:
-    def __init__(self, filename: str, source: str, ast_root: ast.AST):
+    def __init__(self, filename: str, source: str, ast_root: ast.AST, flags=CompilerFlags.NONE):
         self.filename = filename
         self.source = source
         self.ast = ast_root
         self.symbols: SymbolTable[str, Symbol] = SymbolTable()
         self.code: list[bytes] = []
+        self.flags = flags
 
     def dump_ast(self):
         print(ast.dump(self.ast, indent=2))

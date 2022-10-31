@@ -15,6 +15,7 @@ class CasioException(Exception):
         lines = ctx.source.splitlines()
         self.file = ctx.filename
         self.line = "<Invalid lineno>"
+        self.lineno = 1
         self.col_offset = self.end_col_offset = -1
         if hasattr(lineinfo, "lineno"):
             self.lineno = lineinfo.lineno
