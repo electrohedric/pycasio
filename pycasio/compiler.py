@@ -28,12 +28,20 @@ def get_type(o):
     return CasioType.NULL
 
 
+def node_between(left: SupportsAST, right: SupportsAST) -> SupportsAST:
+    sa = ast.AST()
+    sa.lineno = left.lineno
+    sa.col_offset = left.end_col_offset
+    sa.end_col_offset = right.col_offset
+    return sa
+
 class CodeFlags(IntFlag):
     NONE = 0
-    PREVENT_EXPRESSION = 0b0001
-    PREVENT_ASSIGNMENT = 0b0010
-    PREVENT_ARGUMENT = 0b0100
-    HAS_SIDE_EFFECTS = 0b1000
+    PREVENT_EXPRESSION =    0b00001
+    PREVENT_ASSIGNMENT =    0b00010
+    PREVENT_ARGUMENT =      0b00100
+    HAS_SIDE_EFFECTS =      0b01000
+    IS_BOOLEAN =            0b10000
 
     def debug_msg(self):
         can_expr = not (self & CodeFlags.PREVENT_EXPRESSION)
@@ -243,6 +251,12 @@ class CasioNodeVisitor(ast.NodeVisitor):
             n = eval_arg(0)
             check_type(CasioType.NUMBER)
             return Code(B.INT + b"(" + n + b")", CasioType.NUMBER)
+        elif func_name == "bool":
+            check_args(1)
+            n = eval_arg(0)
+            check_type(CasioType.NUMBER)
+            # python needs operands specifically turned into bools to do xor properly but not casio
+            return Code(n.bytes, n.type, CodeFlags.IS_BOOLEAN)
         elif func_name == "len":
             raise CasioNotImplementedException(self.ctx, node, f"{func_name} not implemented yet")
         elif func_name == "list":
@@ -289,11 +303,11 @@ class CasioNodeVisitor(ast.NodeVisitor):
             raise CasioTypeError(self.ctx, node, "Unary operations only supported with numbers")
 
         if isinstance(op, ast.USub):  # negative sign
-            return Code(B.NEGATIVE + expr_eval.bytes, expr_eval.type)
+            return Code(B.NEGATIVE + expr_eval.bytes, expr_eval.type, expr_eval.flags)
         elif isinstance(op, ast.UAdd):  # positive sign
             return expr_eval  # nothing needs to be changed
         elif isinstance(op, ast.Not):
-            return Code(B.NOT + expr_eval.bytes, expr_eval.type)
+            return Code(B.NOT + expr_eval.bytes, expr_eval.type, CodeFlags.IS_BOOLEAN)
         # TODO: and more
         raise CasioNotSupportedError(self.ctx, op, "This operation is not supported by Casio",
                                      helptxt="Bitwise operators are unsupported")
@@ -308,11 +322,12 @@ class CasioNodeVisitor(ast.NodeVisitor):
         if left_eval.type != CasioType.NUMBER:
             # TODO: implement string ops too
             raise CasioTypeError(self.ctx, node, "Binary operations only supported with numbers")
+        flags = left_eval.flags & right_eval.flags
 
         def simple_bin(operator: bytes):
             # TODO: don't need to add parenthesis if the prescendance of the outside operator
             #       is less than or equal to our operator
-            return Code(b"(" + left_eval.bytes + operator + right_eval.bytes + b")", left_eval.type)
+            return Code(b"(" + left_eval.bytes + operator + right_eval.bytes + b")", left_eval.type, flags)
 
         if isinstance(op, ast.Mult):
             return simple_bin(B.MULTIPLY)
@@ -322,32 +337,78 @@ class CasioNodeVisitor(ast.NodeVisitor):
             return simple_bin(B.SUBTRACT)
         elif isinstance(op, ast.Div):
             return simple_bin(B.DIVIDE)
-        elif isinstance(op, ast.Eq):  # FIXME Compare
-            return simple_bin(b"=")
-        elif isinstance(op, ast.Lt):  # FIXME Compare
-            return simple_bin(b"<")
-        elif isinstance(op, ast.Gt):  # FIXME Compare
-            return simple_bin(b">")
-        elif isinstance(op, ast.LtE):  # FIXME Compare
-            return simple_bin(B.LT_EQUAL)
-        elif isinstance(op, ast.GtE):  # FIXME Compare
-            return simple_bin(B.GT_EQUAL)
-        elif isinstance(op, ast.NotEq):  # FIXME Compare
-            return simple_bin(B.NOT_EQUAL)
-        elif isinstance(op, ast.And):  # FIXME BoolOp
-            return simple_bin(B.AND)
-        elif isinstance(op, ast.Or):  # FIXME BoolOp
-            return simple_bin(B.OR)
         elif isinstance(op, ast.Pow):
             return simple_bin(B.POWER)
         elif isinstance(op, ast.Mod):
-            return Code(B.MOD + left_eval.bytes + b"," + right_eval.bytes + b")", CasioType.NUMBER)
+            return Code(B.MOD + left_eval.bytes + b"," + right_eval.bytes + b")", CasioType.NUMBER, flags)
         elif isinstance(op, ast.FloorDiv):
-            return Code(B.FLOOR + b"(" + left_eval.bytes + B.DIVIDE + right_eval.bytes + b")", CasioType.NUMBER)
+            return Code(B.FLOOR + b"(" + left_eval.bytes + B.DIVIDE + right_eval.bytes + b")", CasioType.NUMBER, flags)
+        elif isinstance(op, ast.BitXor):
+            if flags & CodeFlags.IS_BOOLEAN:
+                return simple_bin(B.XOR)
+            raise CasioNotSupportedError(self.ctx, node_between(left, right), "Bitwise XOR is not supported by Casio",
+                                         helptxt="You can wrap each operand in bool() to use logical XOR instead")
         # TODO: and more?
-        # FIXME: <invalid lineno> when doing x^y, should at least print the line
-        raise CasioNotSupportedError(self.ctx, op, "This operation is not supported by Casio",
-                                     helptxt="Bitwise operators are unsupported")
+        raise CasioNotSupportedError(self.ctx, node_between(left, right),
+                                     f"{op} binary operation is not supported by Casio")
+
+    def visit_Compare(self, node: ast.Compare) -> Any:
+        ops = (*node.ops, None)
+        comparators = (node.left, *node.comparators, None)
+        code_bytes = b"("
+        # zip operation uses shortest tuple: limited by ops
+        for left, op, right in zip(comparators, ops, comparators[1:]):  # type: ast.expr, ast.operator, ast.expr
+            # first add the bytes for the left side
+            left_eval = self.check_eval(left)
+            if left_eval.type != CasioType.NUMBER:
+                # TODO: support comparison between strings
+                raise CasioTypeError(self.ctx, node, f"Comparison must be between numbers, not {left_eval.type}")
+            code_bytes += left_eval.bytes
+
+            # no op means end
+            if op is None:
+                break
+
+            # then add the bytes for the operator
+            if isinstance(op, ast.Eq):
+                code_bytes += b"="
+            elif isinstance(op, ast.Lt):
+                code_bytes += b"<"
+            elif isinstance(op, ast.Gt):
+                code_bytes += b">"
+            elif isinstance(op, ast.LtE):
+                code_bytes += B.LT_EQUAL
+            elif isinstance(op, ast.GtE):
+                code_bytes += B.GT_EQUAL
+            elif isinstance(op, ast.NotEq):
+                code_bytes += B.NOT_EQUAL
+            else:
+                raise CasioNotSupportedError(self.ctx, node_between(left, right),
+                                             f"{op} comparison operator is not supported by Casio")
+        code_bytes += b")"
+        return Code(code_bytes, CasioType.NUMBER, CodeFlags.IS_BOOLEAN)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> Any:
+        op = node.op
+        eval_values = []
+
+        for value in node.values:
+            eval_value = self.check_eval(value)
+            if eval_value.type != CasioType.NUMBER:
+                raise CasioTypeError(self.ctx, value,
+                                     f"Boolean operator must be between numbers, not {eval_value.type}")
+            eval_values.append(eval_value)
+
+        def bool_op(operator: bytes):
+            return Code(b"(" + operator.join([v.bytes for v in eval_values]) + b")",
+                        CasioType.NUMBER, CodeFlags.IS_BOOLEAN)
+
+        if isinstance(op, ast.And):
+            return bool_op(B.AND)
+        elif isinstance(op, ast.Or):
+            return bool_op(B.OR)
+        raise CasioNotSupportedError(self.ctx, node_between(node.values[0], node.values[1]),
+                                     f"{op} boolean operation is not supported by Casio")
 
     def visit_Assign(self, node: ast.Assign) -> None:
         left = node.targets
